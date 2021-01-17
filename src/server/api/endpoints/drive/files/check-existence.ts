@@ -1,7 +1,6 @@
 import $ from 'cafy';
 import define from '../../../define';
 import { DriveFiles } from '../../../../../models';
-import { types, bool } from '../../../../../misc/schema';
 
 export const meta = {
 	desc: {
@@ -11,7 +10,7 @@ export const meta = {
 
 	tags: ['drive'],
 
-	requireCredential: true,
+	requireCredential: true as const,
 
 	kind: 'read:drive',
 
@@ -25,8 +24,8 @@ export const meta = {
 	},
 
 	res: {
-		type: types.boolean,
-		optional: bool.false, nullable: bool.false,
+		type: 'boolean' as const,
+		optional: false as const, nullable: false as const,
 	},
 };
 

@@ -3,7 +3,6 @@ import { ID } from '../../../../../misc/cafy-id';
 import define from '../../../define';
 import { ApiError } from '../../../error';
 import { UserGroups, UserGroupJoinings } from '../../../../../models';
-import { types, bool } from '../../../../../misc/schema';
 
 export const meta = {
 	desc: {
@@ -13,7 +12,7 @@ export const meta = {
 
 	tags: ['groups', 'account'],
 
-	requireCredential: true,
+	requireCredential: true as const,
 
 	kind: 'read:user-groups',
 
@@ -24,8 +23,8 @@ export const meta = {
 	},
 
 	res: {
-		type: types.object,
-		optional: bool.false, nullable: bool.false,
+		type: 'object' as const,
+		optional: false as const, nullable: false as const,
 		ref: 'UserGroup',
 	},
 

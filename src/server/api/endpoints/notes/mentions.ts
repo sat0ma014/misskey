@@ -4,10 +4,9 @@ import define from '../../define';
 import read from '../../../../services/note/read';
 import { Notes, Followings } from '../../../../models';
 import { generateVisibilityQuery } from '../../common/generate-visibility-query';
-import { generateMuteQuery } from '../../common/generate-mute-query';
+import { generateMutedUserQuery } from '../../common/generate-muted-user-query';
 import { makePaginationQuery } from '../../common/make-pagination-query';
 import { Brackets } from 'typeorm';
-import { types, bool } from '../../../../misc/schema';
 
 export const meta = {
 	desc: {
@@ -17,7 +16,7 @@ export const meta = {
 
 	tags: ['notes'],
 
-	requireCredential: true,
+	requireCredential: true as const,
 
 	params: {
 		following: {
@@ -44,11 +43,11 @@ export const meta = {
 	},
 
 	res: {
-		type: types.array,
-		optional: bool.false, nullable: bool.false,
+		type: 'array' as const,
+		optional: false as const, nullable: false as const,
 		items: {
-			type: types.object,
-			optional: bool.false, nullable: bool.false,
+			type: 'object' as const,
+			optional: false as const, nullable: false as const,
 			ref: 'Note',
 		}
 	},
@@ -67,7 +66,7 @@ export default define(meta, async (ps, user) => {
 		.leftJoinAndSelect('note.user', 'user');
 
 	generateVisibilityQuery(query, user);
-	generateMuteQuery(query, user);
+	generateMutedUserQuery(query, user);
 
 	if (ps.visibility) {
 		query.andWhere('note.visibility = :visibility', { visibility: ps.visibility });

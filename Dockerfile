@@ -1,8 +1,6 @@
-FROM node:12.1-alpine AS base
+FROM node:14.15.1-alpine AS base
 
 ENV NODE_ENV=production
-
-RUN npm i -g npm@latest
 
 WORKDIR /misskey
 
@@ -12,6 +10,7 @@ RUN apk add --no-cache \
     autoconf \
     automake \
     file \
+		git \
     g++ \
     gcc \
     libc-dev \
@@ -22,10 +21,10 @@ RUN apk add --no-cache \
     python \
     zlib-dev
 
-COPY package.json ./
-RUN npm i
+COPY package.json yarn.lock ./
+RUN yarn install
 COPY . ./
-RUN npm run build
+RUN yarn build
 
 FROM base AS runner
 

@@ -2,6 +2,7 @@ import $ from 'cafy';
 import { ID } from '../../../../misc/cafy-id';
 import define from '../../define';
 import { Users } from '../../../../models';
+import { insertModerationLog } from '../../../../services/insert-moderation-log';
 
 export const meta = {
 	desc: {
@@ -11,7 +12,7 @@ export const meta = {
 
 	tags: ['admin'],
 
-	requireCredential: true,
+	requireCredential: true as const,
 	requireModerator: true,
 
 	params: {
@@ -25,7 +26,7 @@ export const meta = {
 	}
 };
 
-export default define(meta, async (ps) => {
+export default define(meta, async (ps, me) => {
 	const user = await Users.findOne(ps.userId as string);
 
 	if (user == null) {
@@ -34,5 +35,9 @@ export default define(meta, async (ps) => {
 
 	await Users.update(user.id, {
 		isSilenced: false
+	});
+
+	insertModerationLog(me, 'unsilence', {
+		targetId: user.id,
 	});
 });

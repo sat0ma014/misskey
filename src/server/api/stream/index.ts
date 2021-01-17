@@ -7,36 +7,47 @@ import Channel from './channel';
 import channels from './channels';
 import { EventEmitter } from 'events';
 import { User } from '../../../models/entities/user';
-import { App } from '../../../models/entities/app';
-import { Users, Followings, Mutings } from '../../../models';
+import { Channel as ChannelModel } from '../../../models/entities/channel';
+import { Users, Followings, Mutings, UserProfiles, ChannelFollowings } from '../../../models';
+import { ApiError } from '../error';
+import { AccessToken } from '../../../models/entities/access-token';
+import { UserProfile } from '../../../models/entities/user-profile';
 
 /**
  * Main stream connection
  */
 export default class Connection {
 	public user?: User;
+	public userProfile?: UserProfile;
 	public following: User['id'][] = [];
 	public muting: User['id'][] = [];
-	public app: App;
+	public followingChannels: ChannelModel['id'][] = [];
+	public token?: AccessToken;
 	private wsConnection: websocket.connection;
 	public subscriber: EventEmitter;
 	private channels: Channel[] = [];
 	private subscribingNotes: any = {};
 	private followingClock: NodeJS.Timer;
 	private mutingClock: NodeJS.Timer;
+	private followingChannelsClock: NodeJS.Timer;
+	private userProfileClock: NodeJS.Timer;
 
 	constructor(
 		wsConnection: websocket.connection,
 		subscriber: EventEmitter,
 		user: User | null | undefined,
-		app: App | null | undefined
+		token: AccessToken | null | undefined
 	) {
 		this.wsConnection = wsConnection;
 		this.subscriber = subscriber;
 		if (user) this.user = user;
-		if (app) this.app = app;
+		if (token) this.token = token;
 
 		this.wsConnection.on('message', this.onWsConnectionMessage);
+
+		this.subscriber.on('broadcast', async ({ type, body }) => {
+			this.onBroadcastMessage(type, body);
+		});
 
 		if (this.user) {
 			this.updateFollowing();
@@ -44,6 +55,12 @@ export default class Connection {
 
 			this.updateMuting();
 			this.mutingClock = setInterval(this.updateMuting, 5000);
+
+			this.updateFollowingChannels();
+			this.followingChannelsClock = setInterval(this.updateFollowingChannels, 5000);
+
+			this.updateUserProfile();
+			this.userProfileClock = setInterval(this.updateUserProfile, 5000);
 		}
 	}
 
@@ -54,13 +71,22 @@ export default class Connection {
 	private async onWsConnectionMessage(data: websocket.IMessage) {
 		if (data.utf8Data == null) return;
 
-		const { type, body } = JSON.parse(data.utf8Data);
+		let obj: Record<string, any>;
+
+		try {
+			obj = JSON.parse(data.utf8Data);
+		} catch (e) {
+			return;
+		}
+
+		const { type, body } = obj;
 
 		switch (type) {
 			case 'api': this.onApiRequest(body); break;
 			case 'readNotification': this.onReadNotification(body); break;
-			case 'subNote': this.onSubscribeNote(body); break;
-			case 'sn': this.onSubscribeNote(body); break; // alias
+			case 'subNote': this.onSubscribeNote(body, true); break;
+			case 'sn': this.onSubscribeNote(body, true); break; // alias
+			case 's': this.onSubscribeNote(body, false); break;
 			case 'unsubNote': this.onUnsubscribeNote(body); break;
 			case 'un': this.onUnsubscribeNote(body); break; // alias
 			case 'connect': this.onChannelConnectRequested(body); break;
@@ -68,6 +94,11 @@ export default class Connection {
 			case 'channel': this.onChannelMessageRequested(body); break;
 			case 'ch': this.onChannelMessageRequested(body); break; // alias
 		}
+	}
+
+	@autobind
+	private onBroadcastMessage(type: string, body: any) {
+		this.sendMessageToWs(type, body);
 	}
 
 	/**
@@ -81,10 +112,18 @@ export default class Connection {
 		const endpoint = payload.endpoint || payload.ep; // alias
 
 		// 呼び出し
-		call(endpoint, user, this.app, payload.data).then(res => {
+		call(endpoint, user, this.token, payload.data).then(res => {
 			this.sendMessageToWs(`api:${payload.id}`, { res });
-		}).catch(e => {
-			this.sendMessageToWs(`api:${payload.id}`, { e });
+		}).catch((e: ApiError) => {
+			this.sendMessageToWs(`api:${payload.id}`, {
+				error: {
+					message: e.message,
+					code: e.code,
+					id: e.id,
+					kind: e.kind,
+					...(e.info ? { info: e.info } : {})
+				}
+			});
 		});
 	}
 
@@ -98,7 +137,7 @@ export default class Connection {
 	 * 投稿購読要求時
 	 */
 	@autobind
-	private onSubscribeNote(payload: any) {
+	private onSubscribeNote(payload: any, read: boolean) {
 		if (!payload.id) return;
 
 		if (this.subscribingNotes[payload.id] == null) {
@@ -107,11 +146,11 @@ export default class Connection {
 
 		this.subscribingNotes[payload.id]++;
 
-		if (this.subscribingNotes[payload.id] == 1) {
+		if (this.subscribingNotes[payload.id] === 1) {
 			this.subscriber.on(`noteStream:${payload.id}`, this.onNoteStreamMessage);
 		}
 
-		if (payload.read && this.user) {
+		if (this.user && read) {
 			readNote(this.user.id, payload.id);
 		}
 	}
@@ -243,6 +282,25 @@ export default class Connection {
 		this.muting = mutings.map(x => x.muteeId);
 	}
 
+	@autobind
+	private async updateFollowingChannels() {
+		const followings = await ChannelFollowings.find({
+			where: {
+				followerId: this.user!.id
+			},
+			select: ['followeeId']
+		});
+
+		this.followingChannels = followings.map(x => x.followeeId);
+	}
+
+	@autobind
+	private async updateUserProfile() {
+		this.userProfile = await UserProfiles.findOne({
+			userId: this.user!.id
+		});
+	}
+
 	/**
 	 * ストリームが切れたとき
 	 */
@@ -254,5 +312,7 @@ export default class Connection {
 
 		if (this.followingClock) clearInterval(this.followingClock);
 		if (this.mutingClock) clearInterval(this.mutingClock);
+		if (this.followingChannelsClock) clearInterval(this.followingChannelsClock);
+		if (this.userProfileClock) clearInterval(this.userProfileClock);
 	}
 }

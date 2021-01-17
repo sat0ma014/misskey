@@ -10,7 +10,7 @@ import { Users, Notes } from '../../../../models';
 import { Note } from '../../../../models/entities/note';
 import { User } from '../../../../models/entities/user';
 import { fetchMeta } from '../../../../misc/fetch-meta';
-import { validActor } from '../../../../remote/activitypub/type';
+import { validActor, validPost } from '../../../../remote/activitypub/type';
 
 export const meta = {
 	tags: ['federation'],
@@ -19,7 +19,7 @@ export const meta = {
 		'ja-JP': 'URIを指定してActivityPubオブジェクトを参照します。'
 	},
 
-	requireCredential: false,
+	requireCredential: false as const,
 
 	params: {
 		uri: {
@@ -145,7 +145,7 @@ async function fetchAny(uri: string) {
 		};
 	}
 
-	if (['Note', 'Question', 'Article'].includes(object.type)) {
+	if (validPost.includes(object.type)) {
 		const note = await createNote(object.id, undefined, true);
 		return {
 			type: 'Note',

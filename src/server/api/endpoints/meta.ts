@@ -1,15 +1,11 @@
 import $ from 'cafy';
-import * as os from 'os';
 import config from '../../../config';
 import define from '../define';
 import { fetchMeta } from '../../../misc/fetch-meta';
-import * as pkg from '../../../../package.json';
-import { Emojis } from '../../../models';
-import { types, bool } from '../../../misc/schema';
+import { Emojis, Users } from '../../../models';
+import { DB_MAX_NOTE_TEXT_LENGTH } from '../../../misc/hard-limits';
 
 export const meta = {
-	stability: 'stable',
-
 	desc: {
 		'ja-JP': 'インスタンス情報を取得します。',
 		'en-US': 'Get the information of this instance.'
@@ -17,7 +13,7 @@ export const meta = {
 
 	tags: ['meta'],
 
-	requireCredential: false,
+	requireCredential: false as const,
 
 	params: {
 		detail: {
@@ -27,40 +23,40 @@ export const meta = {
 	},
 
 	res: {
-		type: types.object,
-		optional: bool.false, nullable: bool.false,
+		type: 'object' as const,
+		optional: false as const, nullable: false as const,
 		properties: {
 			version: {
-				type: types.string,
-				optional: bool.false, nullable: bool.false,
+				type: 'string' as const,
+				optional: false as const, nullable: false as const,
 				description: 'The version of Misskey of this instance.',
-				example: pkg.version
+				example: config.version
 			},
 			name: {
-				type: types.string,
-				optional: bool.false, nullable: bool.false,
+				type: 'string' as const,
+				optional: false as const, nullable: false as const,
 				description: 'The name of this instance.',
 			},
 			description: {
-				type: types.string,
-				optional: bool.false, nullable: bool.false,
+				type: 'string' as const,
+				optional: false as const, nullable: false as const,
 				description: 'The description of this instance.',
 			},
 			announcements: {
-				type: types.array,
-				optional: bool.false, nullable: bool.false,
+				type: 'array' as const,
+				optional: false as const, nullable: false as const,
 				items: {
-					type: types.object,
-					optional: bool.false, nullable: bool.false,
+					type: 'object' as const,
+					optional: false as const, nullable: false as const,
 					properties: {
 						title: {
-							type: types.string,
-							optional: bool.false, nullable: bool.false,
+							type: 'string' as const,
+							optional: false as const, nullable: false as const,
 							description: 'The title of the announcement.',
 						},
 						text: {
-							type: types.string,
-							optional: bool.false, nullable: bool.false,
+							type: 'string' as const,
+							optional: false as const, nullable: false as const,
 							description: 'The text of the announcement. (can be HTML)',
 						},
 					}
@@ -68,24 +64,19 @@ export const meta = {
 				description: 'The announcements of this instance.',
 			},
 			disableRegistration: {
-				type: types.boolean,
-				optional: bool.false, nullable: bool.false,
+				type: 'boolean' as const,
+				optional: false as const, nullable: false as const,
 				description: 'Whether disabled open registration.',
 			},
 			disableLocalTimeline: {
-				type: types.boolean,
-				optional: bool.false, nullable: bool.false,
+				type: 'boolean' as const,
+				optional: false as const, nullable: false as const,
 				description: 'Whether disabled LTL and STL.',
 			},
 			disableGlobalTimeline: {
-				type: types.boolean,
-				optional: bool.false, nullable: bool.false,
+				type: 'boolean' as const,
+				optional: false as const, nullable: false as const,
 				description: 'Whether disabled GTL.',
-			},
-			enableEmojiReaction: {
-				type: types.boolean,
-				optional: bool.false, nullable: bool.false,
-				description: 'Whether enabled emoji reaction.',
 			},
 		}
 	}
@@ -94,40 +85,43 @@ export const meta = {
 export default define(meta, async (ps, me) => {
 	const instance = await fetchMeta(true);
 
-	const emojis = await Emojis.find({ where: { host: null }, cache: 3600000 }); // 1 hour
+	const emojis = await Emojis.find({
+		where: {
+			host: null
+		},
+		order: {
+			category: 'ASC',
+			name: 'ASC'
+		},
+		cache: {
+			id: 'meta_emojis',
+			milliseconds: 3600000	// 1 hour
+		}
+	});
 
 	const response: any = {
 		maintainerName: instance.maintainerName,
 		maintainerEmail: instance.maintainerEmail,
 
-		version: pkg.version,
+		version: config.version,
 
 		name: instance.name,
 		uri: config.url,
 		description: instance.description,
 		langs: instance.langs,
-		ToSUrl: instance.ToSUrl,
+		tosUrl: instance.ToSUrl,
 		repositoryUrl: instance.repositoryUrl,
 		feedbackUrl: instance.feedbackUrl,
 
 		secure: config.https != null,
-		machine: os.hostname(),
-		os: os.platform(),
-		node: process.version,
 
-		cpu: {
-			model: os.cpus()[0].model,
-			cores: os.cpus().length
-		},
-
-		announcements: instance.announcements || [],
 		disableRegistration: instance.disableRegistration,
 		disableLocalTimeline: instance.disableLocalTimeline,
 		disableGlobalTimeline: instance.disableGlobalTimeline,
-		enableEmojiReaction: instance.enableEmojiReaction,
 		driveCapacityPerLocalUserMb: instance.localDriveCapacityMb,
 		driveCapacityPerRemoteUserMb: instance.remoteDriveCapacityMb,
-		cacheRemoteFiles: instance.cacheRemoteFiles,
+		enableHcaptcha: instance.enableHcaptcha,
+		hcaptchaSiteKey: instance.hcaptchaSiteKey,
 		enableRecaptcha: instance.enableRecaptcha,
 		recaptchaSiteKey: instance.recaptchaSiteKey,
 		swPublickey: instance.swPublicKey,
@@ -135,8 +129,10 @@ export default define(meta, async (ps, me) => {
 		bannerUrl: instance.bannerUrl,
 		errorImageUrl: instance.errorImageUrl,
 		iconUrl: instance.iconUrl,
-		maxNoteTextLength: instance.maxNoteTextLength,
-		emojis: emojis,
+		backgroundImageUrl: instance.backgroundImageUrl,
+		logoImageUrl: instance.logoImageUrl,
+		maxNoteTextLength: Math.min(instance.maxNoteTextLength, DB_MAX_NOTE_TEXT_LENGTH),
+		emojis: await Emojis.packMany(emojis),
 		enableEmail: instance.enableEmail,
 
 		enableTwitterIntegration: instance.enableTwitterIntegration,
@@ -144,54 +140,72 @@ export default define(meta, async (ps, me) => {
 		enableDiscordIntegration: instance.enableDiscordIntegration,
 
 		enableServiceWorker: instance.enableServiceWorker,
+
+		...(ps.detail ? {
+			pinnedPages: instance.pinnedPages,
+			pinnedClipId: instance.pinnedClipId,
+			cacheRemoteFiles: instance.cacheRemoteFiles,
+			proxyRemoteFiles: instance.proxyRemoteFiles,
+			requireSetup: (await Users.count({
+				host: null,
+			})) === 0,
+		} : {})
 	};
 
 	if (ps.detail) {
+		const proxyAccount = instance.proxyAccountId ? await Users.pack(instance.proxyAccountId).catch(() => null) : null;
+
+		response.proxyAccountName = proxyAccount ? proxyAccount.username : null;
 		response.features = {
 			registration: !instance.disableRegistration,
 			localTimeLine: !instance.disableLocalTimeline,
 			globalTimeLine: !instance.disableGlobalTimeline,
 			elasticsearch: config.elasticsearch ? true : false,
+			hcaptcha: instance.enableHcaptcha,
 			recaptcha: instance.enableRecaptcha,
 			objectStorage: instance.useObjectStorage,
 			twitter: instance.enableTwitterIntegration,
 			github: instance.enableGithubIntegration,
 			discord: instance.enableDiscordIntegration,
 			serviceWorker: instance.enableServiceWorker,
+			miauth: true,
 		};
-	}
 
-	if (me && (me.isAdmin || me.isModerator)) {
-		response.useStarForReactionFallback = instance.useStarForReactionFallback;
-		response.pinnedUsers = instance.pinnedUsers;
-		response.hiddenTags = instance.hiddenTags;
-		response.blockedHosts = instance.blockedHosts;
-		response.recaptchaSecretKey = instance.recaptchaSecretKey;
-		response.proxyAccount = instance.proxyAccount;
-		response.twitterConsumerKey = instance.twitterConsumerKey;
-		response.twitterConsumerSecret = instance.twitterConsumerSecret;
-		response.githubClientId = instance.githubClientId;
-		response.githubClientSecret = instance.githubClientSecret;
-		response.discordClientId = instance.discordClientId;
-		response.discordClientSecret = instance.discordClientSecret;
-		response.summalyProxy = instance.summalyProxy;
-		response.email = instance.email;
-		response.smtpSecure = instance.smtpSecure;
-		response.smtpHost = instance.smtpHost;
-		response.smtpPort = instance.smtpPort;
-		response.smtpUser = instance.smtpUser;
-		response.smtpPass = instance.smtpPass;
-		response.swPrivateKey = instance.swPrivateKey;
-		response.useObjectStorage = instance.useObjectStorage;
-		response.objectStorageBaseUrl = instance.objectStorageBaseUrl;
-		response.objectStorageBucket = instance.objectStorageBucket;
-		response.objectStoragePrefix = instance.objectStoragePrefix;
-		response.objectStorageEndpoint = instance.objectStorageEndpoint;
-		response.objectStorageRegion = instance.objectStorageRegion;
-		response.objectStoragePort = instance.objectStoragePort;
-		response.objectStorageAccessKey = instance.objectStorageAccessKey;
-		response.objectStorageSecretKey = instance.objectStorageSecretKey;
-		response.objectStorageUseSSL = instance.objectStorageUseSSL;
+		if (me && me.isAdmin) {
+			response.useStarForReactionFallback = instance.useStarForReactionFallback;
+			response.pinnedUsers = instance.pinnedUsers;
+			response.hiddenTags = instance.hiddenTags;
+			response.blockedHosts = instance.blockedHosts;
+			response.hcaptchaSecretKey = instance.hcaptchaSecretKey;
+			response.recaptchaSecretKey = instance.recaptchaSecretKey;
+			response.proxyAccountId = instance.proxyAccountId;
+			response.twitterConsumerKey = instance.twitterConsumerKey;
+			response.twitterConsumerSecret = instance.twitterConsumerSecret;
+			response.githubClientId = instance.githubClientId;
+			response.githubClientSecret = instance.githubClientSecret;
+			response.discordClientId = instance.discordClientId;
+			response.discordClientSecret = instance.discordClientSecret;
+			response.summalyProxy = instance.summalyProxy;
+			response.email = instance.email;
+			response.smtpSecure = instance.smtpSecure;
+			response.smtpHost = instance.smtpHost;
+			response.smtpPort = instance.smtpPort;
+			response.smtpUser = instance.smtpUser;
+			response.smtpPass = instance.smtpPass;
+			response.swPrivateKey = instance.swPrivateKey;
+			response.useObjectStorage = instance.useObjectStorage;
+			response.objectStorageBaseUrl = instance.objectStorageBaseUrl;
+			response.objectStorageBucket = instance.objectStorageBucket;
+			response.objectStoragePrefix = instance.objectStoragePrefix;
+			response.objectStorageEndpoint = instance.objectStorageEndpoint;
+			response.objectStorageRegion = instance.objectStorageRegion;
+			response.objectStoragePort = instance.objectStoragePort;
+			response.objectStorageAccessKey = instance.objectStorageAccessKey;
+			response.objectStorageSecretKey = instance.objectStorageSecretKey;
+			response.objectStorageUseSSL = instance.objectStorageUseSSL;
+			response.objectStorageUseProxy = instance.objectStorageUseProxy;
+			response.objectStorageSetPublicRead = instance.objectStorageSetPublicRead;
+		}
 	}
 
 	return response;

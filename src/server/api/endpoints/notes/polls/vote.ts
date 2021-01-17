@@ -1,6 +1,5 @@
 import $ from 'cafy';
 import { ID } from '../../../../../misc/cafy-id';
-import watch from '../../../../../services/note/watch';
 import { publishNoteStream } from '../../../../../services/stream';
 import { createNotification } from '../../../../../services/create-notification';
 import define from '../../../define';
@@ -10,7 +9,7 @@ import { deliver } from '../../../../../queue';
 import { renderActivity } from '../../../../../remote/activitypub/renderer';
 import renderVote from '../../../../../remote/activitypub/renderer/vote';
 import { deliverQuestionUpdate } from '../../../../../services/note/polls/update';
-import { PollVotes, NoteWatchings, Users, Polls, UserProfiles } from '../../../../../models';
+import { PollVotes, NoteWatchings, Users, Polls } from '../../../../../models';
 import { Not } from 'typeorm';
 import { IRemoteUser } from '../../../../../models/entities/user';
 import { genId } from '../../../../../misc/gen-id';
@@ -24,7 +23,7 @@ export const meta = {
 
 	tags: ['notes'],
 
-	requireCredential: true,
+	requireCredential: true as const,
 
 	kind: 'write:votes',
 
@@ -132,7 +131,8 @@ export default define(meta, async (ps, user) => {
 	});
 
 	// Notify
-	createNotification(note.userId, user.id, 'pollVote', {
+	createNotification(note.userId, 'pollVote', {
+		notifierId: user.id,
 		noteId: note.id,
 		choice: ps.choice
 	});
@@ -143,19 +143,13 @@ export default define(meta, async (ps, user) => {
 		userId: Not(user.id),
 	}).then(watchers => {
 		for (const watcher of watchers) {
-			createNotification(watcher.userId, user.id, 'pollVote', {
+			createNotification(watcher.userId, 'pollVote', {
+				notifierId: user.id,
 				noteId: note.id,
 				choice: ps.choice
 			});
 		}
 	});
-
-	const profile = await UserProfiles.findOne(user.id).then(ensure);
-
-	// この投稿をWatchする
-	if (profile.autoWatch !== false) {
-		watch(user.id, note);
-	}
 
 	// リモート投票の場合リプライ送信
 	if (note.userHost != null) {

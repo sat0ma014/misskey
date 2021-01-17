@@ -16,6 +16,10 @@ module.exports = (server: http.Server) => {
 
 	ws.on('request', async (request) => {
 		const q = request.resourceURL.query as ParsedUrlQuery;
+
+		// TODO: トークンが間違ってるなどしてauthenticateに失敗したら
+		// コネクション切断するなりエラーメッセージ返すなりする
+		// (現状はエラーがキャッチされておらずサーバーのログに流れて邪魔なので)
 		const [user, app] = await authenticate(q.i as string);
 
 		const connection = request.accept();
@@ -24,9 +28,14 @@ module.exports = (server: http.Server) => {
 
 		// Connect to Redis
 		const subscriber = redis.createClient(
-			config.redis.port, config.redis.host);
+			config.redis.port,
+			config.redis.host,
+			{
+				password: config.redis.pass
+			}
+		);
 
-		subscriber.subscribe('misskey');
+		subscriber.subscribe(config.host);
 
 		ev = new EventEmitter();
 
@@ -49,7 +58,7 @@ module.exports = (server: http.Server) => {
 		});
 
 		connection.on('message', async (data) => {
-			if (data.utf8Data == 'ping') {
+			if (data.utf8Data === 'ping') {
 				connection.send('pong');
 			}
 		});

@@ -2,7 +2,8 @@ import { EntityRepository, Repository } from 'typeorm';
 import { NoteReaction } from '../entities/note-reaction';
 import { Users } from '..';
 import { ensure } from '../../prelude/ensure';
-import { types, bool, SchemaType } from '../../misc/schema';
+import { SchemaType } from '../../misc/schema';
+import { convertLegacyReaction } from '../../misc/reaction-lib';
 
 export type PackedNoteReaction = SchemaType<typeof packedNoteReactionSchema>;
 
@@ -18,37 +19,37 @@ export class NoteReactionRepository extends Repository<NoteReaction> {
 			id: reaction.id,
 			createdAt: reaction.createdAt.toISOString(),
 			user: await Users.pack(reaction.userId, me),
-			type: reaction.reaction,
+			type: convertLegacyReaction(reaction.reaction),
 		};
 	}
 }
 
 export const packedNoteReactionSchema = {
-	type: types.object,
-	optional: bool.false, nullable: bool.false,
+	type: 'object' as const,
+	optional: false as const, nullable: false as const,
 	properties: {
 		id: {
-			type: types.string,
-			optional: bool.false, nullable: bool.false,
+			type: 'string' as const,
+			optional: false as const, nullable: false as const,
 			format: 'id',
 			description: 'The unique identifier for this reaction.',
 			example: 'xxxxxxxxxx',
 		},
 		createdAt: {
-			type: types.string,
-			optional: bool.false, nullable: bool.false,
+			type: 'string' as const,
+			optional: false as const, nullable: false as const,
 			format: 'date-time',
 			description: 'The date that the reaction was created.'
 		},
 		user: {
-			type: types.object,
-			optional: bool.false, nullable: bool.false,
+			type: 'object' as const,
+			optional: false as const, nullable: false as const,
 			ref: 'User',
 			description: 'User who performed this reaction.'
 		},
 		type: {
-			type: types.string,
-			optional: bool.false, nullable: bool.false,
+			type: 'string' as const,
+			optional: false as const, nullable: false as const,
 			description: 'The reaction type.'
 		},
 	},

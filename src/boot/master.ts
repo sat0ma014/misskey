@@ -1,17 +1,18 @@
 import * as os from 'os';
 import * as cluster from 'cluster';
-import chalk from 'chalk';
+import * as chalk from 'chalk';
 import * as portscanner from 'portscanner';
 import * as isRoot from 'is-root';
+import { getConnection } from 'typeorm';
 
 import Logger from '../services/logger';
 import loadConfig from '../config/load';
 import { Config } from '../config/types';
 import { lessThan } from '../prelude/array';
-import * as pkg from '../../package.json';
 import { program } from '../argv';
 import { showMachineInfo } from '../misc/show-machine-info';
 import { initDb } from '../db/postgre';
+import * as meta from '../meta.json';
 
 const logger = new Logger('core', 'cyan');
 const bootLogger = logger.createSubLogger('boot', 'magenta', false);
@@ -19,7 +20,7 @@ const bootLogger = logger.createSubLogger('boot', 'magenta', false);
 function greet() {
 	if (!program.quiet) {
 		//#region Misskey logo
-		const v = `v${pkg.version}`;
+		const v = `v${meta.version}`;
 		console.log('  _____ _         _           ');
 		console.log(' |     |_|___ ___| |_ ___ _ _ ');
 		console.log(' | | | | |_ -|_ -| \'_| -_| | |');
@@ -27,26 +28,26 @@ function greet() {
 		console.log(' ' + chalk.gray(v) + ('                        |___|\n'.substr(v.length)));
 		//#endregion
 
-		console.log(' Misskey is maintained by @syuilo, @AyaMorisawa, @mei23, @acid-chicken, and @rinsuki.');
+		console.log(' Misskey is an open-source decentralized microblogging platform.');
 		console.log(chalk.keyword('orange')(' If you like Misskey, please donate to support development. https://www.patreon.com/syuilo'));
 
 		console.log('');
-		console.log(chalk`< ${os.hostname()} {gray (PID: ${process.pid.toString()})} >`);
+		console.log(chalk`--- ${os.hostname()} {gray (PID: ${process.pid.toString()})} ---`);
 	}
 
 	bootLogger.info('Welcome to Misskey!');
-	bootLogger.info(`Misskey v${pkg.version}`, null, true);
+	bootLogger.info(`Misskey v${meta.version}`, null, true);
 }
 
 /**
  * Init master process
  */
 export async function masterMain() {
-	greet();
-
 	let config!: Config;
 
 	try {
+		greet();
+
 		// initialize app
 		config = await init();
 
@@ -75,13 +76,13 @@ export async function masterMain() {
 		await spawnWorkers(config.clusterLimit);
 	}
 
+	bootLogger.succ(`Now listening on port ${config.port} on ${config.url}`, null, true);
+
 	if (!program.noDaemons) {
 		require('../daemons/server-stats').default();
-		require('../daemons/notes-stats').default();
 		require('../daemons/queue-stats').default();
+		require('../daemons/janitor').default();
 	}
-
-	bootLogger.succ(`Now listening on port ${config.port} on ${config.url}`, null, true);
 }
 
 const runningNodejsVersion = process.version.slice(1).split('.').map(x => parseInt(x, 10));
@@ -99,7 +100,7 @@ async function isPortAvailable(port: number): Promise<boolean> {
 function showEnvironment(): void {
 	const env = process.env.NODE_ENV;
 	const logger = bootLogger.createSubLogger('env');
-	logger.info(typeof env == 'undefined' ? 'NODE_ENV is not set' : `NODE_ENV: ${env}`);
+	logger.info(typeof env === 'undefined' ? 'NODE_ENV is not set' : `NODE_ENV: ${env}`);
 
 	if (env !== 'production') {
 		logger.warn('The environment is not in production mode.');
@@ -115,6 +116,8 @@ function showEnvironment(): void {
 async function init(): Promise<Config> {
 	showEnvironment();
 
+	await showMachineInfo(bootLogger);
+
 	const nodejsLogger = bootLogger.createSubLogger('nodejs');
 
 	nodejsLogger.info(`Version ${runningNodejsVersion.join('.')}`);
@@ -123,8 +126,6 @@ async function init(): Promise<Config> {
 		nodejsLogger.error(`Node.js version is less than ${requiredNodejsVersion.join('.')}. Please upgrade it.`, null, true);
 		process.exit(1);
 	}
-
-	await showMachineInfo(bootLogger);
 
 	const configLogger = bootLogger.createSubLogger('config');
 	let config;
@@ -145,20 +146,24 @@ async function init(): Promise<Config> {
 
 	configLogger.succ('Loaded');
 
+	const dbLogger = bootLogger.createSubLogger('db');
+
 	// Try to connect to DB
 	try {
-		bootLogger.info('Connecting database...');
+		dbLogger.info('Connecting...');
 		await initDb();
+		const v = await getConnection().query('SHOW server_version').then(x => x[0].server_version);
+		dbLogger.succ(`Connected: v${v}`);
 	} catch (e) {
-		bootLogger.error('Cannot connect to database', null, true);
-		bootLogger.error(e);
+		dbLogger.error('Cannot connect', null, true);
+		dbLogger.error(e);
 		process.exit(1);
 	}
 
 	return config;
 }
 
-async function spawnWorkers(limit: number = Infinity) {
+async function spawnWorkers(limit: number = 1) {
 	const workers = Math.min(limit, os.cpus().length);
 	bootLogger.info(`Starting ${workers} worker${workers === 1 ? '' : 's'}...`);
 	await Promise.all([...Array(workers)].map(spawnWorker));

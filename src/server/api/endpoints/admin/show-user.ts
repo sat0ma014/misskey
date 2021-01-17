@@ -10,7 +10,7 @@ export const meta = {
 
 	tags: ['admin'],
 
-	requireCredential: true,
+	requireCredential: true as const,
 	requireModerator: true,
 
 	params: {
@@ -31,9 +31,12 @@ export default define(meta, async (ps, me) => {
 		throw new Error('user not found');
 	}
 
-	if (me.isModerator && user.isAdmin) {
+	if ((me.isModerator && !me.isAdmin) && user.isAdmin) {
 		throw new Error('cannot show info of admin');
 	}
 
-	return user;
+	return {
+		...user,
+		token: user.token != null ? '<MASKED>' : user.token,
+	};
 });

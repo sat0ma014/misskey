@@ -2,7 +2,7 @@ import renderImage from './image';
 import renderKey from './key';
 import config from '../../../config';
 import { ILocalUser } from '../../../models/entities/user';
-import { toHtml } from '../../../mfm/toHtml';
+import { toHtml } from '../../../mfm/to-html';
 import { parse } from '../../../mfm/parse';
 import { getEmojis } from './note';
 import renderEmoji from './emoji';
@@ -13,6 +13,7 @@ import { ensure } from '../../../prelude/ensure';
 
 export async function renderPerson(user: ILocalUser) {
 	const id = `${config.url}/users/${user.id}`;
+	const isSystem = !!user.username.match(/\./);
 
 	const [avatar, banner, profile] = await Promise.all([
 		user.avatarId ? DriveFiles.findOne(user.avatarId) : Promise.resolve(undefined),
@@ -21,50 +22,22 @@ export async function renderPerson(user: ILocalUser) {
 	]);
 
 	const attachment: {
-		type: string,
+		type: 'PropertyValue',
 		name: string,
 		value: string,
-		verified_at?: string,
 		identifier?: IIdentifier
 	}[] = [];
 
-	if (profile.twitter) {
-		attachment.push({
-			type: 'PropertyValue',
-			name: 'Twitter',
-			value: `<a href="https://twitter.com/intent/user?user_id=${profile.twitterUserId}" rel="me nofollow noopener" target="_blank"><span>@${profile.twitterScreenName}</span></a>`,
-			identifier: {
+	if (profile.fields) {
+		for (const field of profile.fields) {
+			attachment.push({
 				type: 'PropertyValue',
-				name: 'misskey:authentication:twitter',
-				value: `${profile.twitterUserId}@${profile.twitterScreenName}`
-			}
-		});
-	}
-
-	if (profile.github) {
-		attachment.push({
-			type: 'PropertyValue',
-			name: 'GitHub',
-			value: `<a href="https://github.com/${profile.githubLogin}" rel="me nofollow noopener" target="_blank"><span>@${profile.githubLogin}</span></a>`,
-			identifier: {
-				type: 'PropertyValue',
-				name: 'misskey:authentication:github',
-				value: `${profile.githubId}@${profile.githubLogin}`
-			}
-		});
-	}
-
-	if (profile.discord) {
-		attachment.push({
-			type: 'PropertyValue',
-			name: 'Discord',
-			value: `<a href="https://discordapp.com/users/${profile.discordId}" rel="me nofollow noopener" target="_blank"><span>${profile.discordUsername}#${profile.discordDiscriminator}</span></a>`,
-			identifier: {
-				type: 'PropertyValue',
-				name: 'misskey:authentication:discord',
-				value: `${profile.discordId}@${profile.discordUsername}#${profile.discordDiscriminator}`
-			}
-		});
+				name: field.name,
+				value: (field.value != null && field.value.match(/^https?:/))
+					? `<a href="${new URL(field.value).href}" rel="me nofollow noopener" target="_blank">${new URL(field.value).href}</a>`
+					: field.value
+			});
+		}
 	}
 
 	const emojis = await getEmojis(user.emojis);
@@ -79,8 +52,8 @@ export async function renderPerson(user: ILocalUser) {
 
 	const keypair = await UserKeypairs.findOne(user.id).then(ensure);
 
-	return {
-		type: user.isBot ? 'Service' : 'Person',
+	const person = {
+		type: isSystem ? 'Application' : user.isBot ? 'Service' : 'Person',
 		id,
 		inbox: `${id}/inbox`,
 		outbox: `${id}/outbox`,
@@ -97,8 +70,19 @@ export async function renderPerson(user: ILocalUser) {
 		image: banner ? renderImage(banner) : null,
 		tag,
 		manuallyApprovesFollowers: user.isLocked,
-		publicKey: renderKey(user, keypair),
+		discoverable: !!user.isExplorable,
+		publicKey: renderKey(user, keypair, `#main-key`),
 		isCat: user.isCat,
 		attachment: attachment.length ? attachment : undefined
-	};
+	} as any;
+
+	if (profile?.birthday) {
+		person['vcard:bday'] = profile.birthday;
+	}
+
+	if (profile?.location) {
+		person['vcard:Address'] = profile.location;
+	}
+
+	return person;
 }

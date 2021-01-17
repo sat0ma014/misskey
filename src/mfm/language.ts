@@ -6,8 +6,8 @@ import { toUnicode } from 'punycode';
 import { emojiRegex } from '../misc/emoji-regex';
 
 export function removeOrphanedBrackets(s: string): string {
-	const openBrackets = ['(', '「'];
-	const closeBrackets = [')', '」'];
+	const openBrackets = ['(', '「', '['];
+	const closeBrackets = [')', '」', ']'];
 	const xs = cumulativeSum(s.split('').map(c => {
 		if (openBrackets.includes(c)) return 1;
 		if (closeBrackets.includes(c)) return -1;
@@ -23,7 +23,6 @@ export const mfmLanguage = P.createLanguage({
 	root: r => P.alt(r.block, r.inline).atLeast(1),
 	plain: r => P.alt(r.emoji, r.text).atLeast(1),
 	block: r => P.alt(
-		r.title,
 		r.quote,
 		r.search,
 		r.blockCode,
@@ -31,26 +30,18 @@ export const mfmLanguage = P.createLanguage({
 		r.center,
 	),
 	startOfLine: () => P((input, i) => {
-		if (i == 0 || input[i] == '\n' || input[i - 1] == '\n') {
+		if (i === 0 || input[i] === '\n' || input[i - 1] === '\n') {
 			return P.makeSuccess(i, null);
 		} else {
 			return P.makeFailure(i, 'not newline');
 		}
 	}),
-	title: r => r.startOfLine.then(P((input, i) => {
-		const text = input.substr(i);
-		const match = text.match(/^([【\[]([^【\[】\]\n]+?)[】\]])(\n|$)/);
-		if (!match) return P.makeFailure(i, 'not a title');
-		const q = match[2].trim();
-		const contents = r.inline.atLeast(1).tryParse(q);
-		return P.makeSuccess(i + match[0].length, createTree('title', contents, {}));
-	})),
 	quote: r => r.startOfLine.then(P((input, i) => {
 		const text = input.substr(i);
 		if (!text.match(/^>[\s\S]+?/)) return P.makeFailure(i, 'not a quote');
 		const quote = takeWhile(line => line.startsWith('>'), text.split('\n'));
 		const qInner = quote.join('\n').replace(/^>/gm, '').replace(/^ /gm, '');
-		if (qInner == '') return P.makeFailure(i, 'not a quote');
+		if (qInner === '') return P.makeFailure(i, 'not a quote');
 		const contents = r.root.tryParse(qInner);
 		return P.makeSuccess(i + quote.join('\n').length + 1, createTree('quote', contents, {}));
 	})),
@@ -72,10 +63,6 @@ export const mfmLanguage = P.createLanguage({
 		r.small,
 		r.italic,
 		r.strike,
-		r.motion,
-		r.spin,
-		r.jump,
-		r.flip,
 		r.inlineCode,
 		r.mathInline,
 		r.mention,
@@ -83,9 +70,14 @@ export const mfmLanguage = P.createLanguage({
 		r.url,
 		r.link,
 		r.emoji,
+		r.fn,
 		r.text
 	),
-	big: r => P.regexp(/^\*\*\*([\s\S]+?)\*\*\*/, 1).map(x => createTree('big', r.inline.atLeast(1).tryParse(x), {})),
+	// TODO: そのうち消す
+	big: r => P.regexp(/^\*\*\*([\s\S]+?)\*\*\*/, 1).map(x => createTree('fn', r.inline.atLeast(1).tryParse(x), {
+		name: 'tada',
+		args: {}
+	})),
 	bold: r => {
 		const asterisk = P.regexp(/\*\*([\s\S]+?)\*\*/, 1);
 		const underscore = P.regexp(/__([a-zA-Z0-9\s]+?)__/, 1);
@@ -98,30 +90,13 @@ export const mfmLanguage = P.createLanguage({
 			const text = input.substr(i);
 			const match = text.match(/^(\*|_)([a-zA-Z0-9]+?[\s\S]*?)\1/);
 			if (!match) return P.makeFailure(i, 'not a italic');
-			if (input[i - 1] != null && input[i - 1].match(/[a-z0-9]/i)) return P.makeFailure(i, 'not a italic');
+			if (input[i - 1] != null && input[i - 1] != ' ' && input[i - 1] != '\n') return P.makeFailure(i, 'not a italic');
 			return P.makeSuccess(i + match[0].length, match[2]);
 		});
 
 		return P.alt(xml, underscore).map(x => createTree('italic', r.inline.atLeast(1).tryParse(x), {}));
 	},
-	strike: r => P.regexp(/~~(.+?)~~/, 1).map(x => createTree('strike', r.inline.atLeast(1).tryParse(x), {})),
-	motion: r => {
-		const paren = P.regexp(/\(\(\(([\s\S]+?)\)\)\)/, 1);
-		const xml = P.regexp(/<motion>(.+?)<\/motion>/, 1);
-		return P.alt(paren, xml).map(x => createTree('motion', r.inline.atLeast(1).tryParse(x), {}));
-	},
-	spin: r => {
-		return P((input, i) => {
-			const text = input.substr(i);
-			const match = text.match(/^<spin(\s[a-z]+?)?>(.+?)<\/spin>/i);
-			if (!match) return P.makeFailure(i, 'not a spin');
-			return P.makeSuccess(i + match[0].length, {
-				content: match[2], attr: match[1] ? match[1].trim() : null
-			});
-		}).map(x => createTree('spin', r.inline.atLeast(1).tryParse(x.content), { attr: x.attr }));
-	},
-	jump: r => P.regexp(/<jump>(.+?)<\/jump>/, 1).map(x => createTree('jump', r.inline.atLeast(1).tryParse(x), {})),
-	flip: r => P.regexp(/<flip>(.+?)<\/flip>/, 1).map(x => createTree('flip', r.inline.atLeast(1).tryParse(x), {})),
+	strike: r => P.regexp(/~~([^\n~]+?)~~/, 1).map(x => createTree('strike', r.inline.atLeast(1).tryParse(x), {})),
 	center: r => r.startOfLine.then(P.regexp(/<center>([\s\S]+?)<\/center>/, 1).map(x => createTree('center', r.inline.atLeast(1).tryParse(x), {}))),
 	inlineCode: () => P.regexp(/`([^´\n]+?)`/, 1).map(x => createLeaf('inlineCode', { code: x })),
 	mathBlock: r => r.startOfLine.then(P.regexp(/\\\[([\s\S]+?)\\\]/, 1).map(x => createLeaf('mathBlock', { formula: x.trim() }))),
@@ -145,9 +120,10 @@ export const mfmLanguage = P.createLanguage({
 		if (!match) return P.makeFailure(i, 'not a hashtag');
 		let hashtag = match[1];
 		hashtag = removeOrphanedBrackets(hashtag);
+		if (hashtag.match(/^(\u20e3|\ufe0f)/)) return P.makeFailure(i, 'not a hashtag');
 		if (hashtag.match(/^[0-9]+$/)) return P.makeFailure(i, 'not a hashtag');
 		if (input[i - 1] != null && input[i - 1].match(/[a-z0-9]/i)) return P.makeFailure(i, 'not a hashtag');
-		if (hashtag.length > 50) return P.makeFailure(i, 'not a hashtag');
+		if (Array.from(hashtag || '').length > 128) return P.makeFailure(i, 'not a hashtag');
 		return P.makeSuccess(i + ('#' + hashtag).length, createLeaf('hashtag', { hashtag: hashtag }));
 	}),
 	url: () => {
@@ -157,15 +133,16 @@ export const mfmLanguage = P.createLanguage({
 			let url: string;
 			if (!match) {
 				const match = text.match(/^<(https?:\/\/.*?)>/);
-				if (!match)
+				if (!match) {
 					return P.makeFailure(i, 'not a url');
+				}
 				url = match[1];
 				i += 2;
-			} else
+			} else {
 				url = match[0];
+			}
 			url = removeOrphanedBrackets(url);
-			if (url.endsWith('.')) url = url.substr(0, url.lastIndexOf('.'));
-			if (url.endsWith(',')) url = url.substr(0, url.lastIndexOf(','));
+			url = url.replace(/[.,]*$/, '');
 			return P.makeSuccess(i + url.length, url);
 		}).map(x => createLeaf('url', { url: x }));
 	},
@@ -185,6 +162,30 @@ export const mfmLanguage = P.createLanguage({
 		const name = P.regexp(/:([a-z0-9_+-]+):/i, 1).map(x => createLeaf('emoji', { name: x }));
 		const code = P.regexp(emojiRegex).map(x => createLeaf('emoji', { emoji: x }));
 		return P.alt(name, code);
+	},
+	fn: r => {
+		return P.seqObj(
+			P.string('['), ['fn', P.regexp(/[^\s\n\[\]]+/)] as any, P.string(' '), P.optWhitespace, ['text', P.regexp(/[^\n\[\]]+/)] as any, P.string(']'),
+		).map((x: any) => {
+			let name = x.fn;
+			const args = {};
+			const separator = x.fn.indexOf('.');
+			if (separator > -1) {
+				name = x.fn.substr(0, separator);
+				for (const arg of x.fn.substr(separator + 1).split(',')) {
+					const kv = arg.split('=');
+					if (kv.length === 1) {
+						args[kv[0]] = true;
+					} else {
+						args[kv[0]] = kv[1];
+					}
+				}
+			}
+			return createTree('fn', r.inline.atLeast(1).tryParse(x.text), {
+				name,
+				args
+			});
+		});
 	},
 	text: () => P.any.map(x => createLeaf('text', { text: x }))
 });

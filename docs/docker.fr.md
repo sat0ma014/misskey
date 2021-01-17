@@ -3,8 +3,9 @@ Guide Docker
 
 Ce guide explique comment installer et configurer Misskey avec Docker.
 
-[Version japonaise également disponible - Japanese version also available - 日本語版もあります](./docker.ja.md)  
-[Version anglaise également disponible - English version also available - 英語版もあります](./docker.en.md)
+- [Version japonaise également disponible - Japanese version also available - 日本語版もあります](./docker.ja.md)  
+- [Version anglaise également disponible - English version also available - 英語版もあります](./docker.en.md)
+- [Version Chinois simplifié également disponible - Simplified Chinese version also available - 简体中文版同样可用](./docker.zh.md)
 
 ----------------------------------------------------------------
 
@@ -55,7 +56,7 @@ Utilisez la commande `docker-compose up -d`. GLHF!
 7. `docker-compose stop && docker-compose up -d`
 
 ### Comment exécuter des [commandes](manage.fr.md)
-`docker-compose run --rm web node cli/mark-admin @example`
+`docker-compose run --rm web node built/tools/mark-admin @example`
 
 ### Configuration d'ElasticSearch (pour la fonction de recherche)
 *1.* Préparation de l'environnement

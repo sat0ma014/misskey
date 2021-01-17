@@ -1,7 +1,9 @@
 import $ from 'cafy';
 import define from '../../../define';
 import { Emojis } from '../../../../../models';
-import { toPunyNullable } from '../../../../../misc/convert-host';
+import { makePaginationQuery } from '../../../common/make-pagination-query';
+import { ID } from '../../../../../misc/cafy-id';
+import { Emoji } from '../../../../../models/entities/emoji';
 
 export const meta = {
 	desc: {
@@ -10,27 +12,51 @@ export const meta = {
 
 	tags: ['admin'],
 
-	requireCredential: true,
+	requireCredential: true as const,
 	requireModerator: true,
 
 	params: {
-		host: {
+		query: {
 			validator: $.optional.nullable.str,
 			default: null as any
+		},
+
+		limit: {
+			validator: $.optional.num.range(1, 100),
+			default: 10
+		},
+
+		sinceId: {
+			validator: $.optional.type(ID),
+		},
+
+		untilId: {
+			validator: $.optional.type(ID),
 		}
 	}
 };
 
 export default define(meta, async (ps) => {
-	const emojis = await Emojis.find({
-		host: toPunyNullable(ps.host)
-	});
+	const q = makePaginationQuery(Emojis.createQueryBuilder('emoji'), ps.sinceId, ps.untilId)
+		.andWhere(`emoji.host IS NULL`);
 
-	return emojis.map(e => ({
-		id: e.id,
-		name: e.name,
-		aliases: e.aliases,
-		host: e.host,
-		url: e.url
-	}));
+	let emojis: Emoji[];
+
+	if (ps.query) {
+		//q.andWhere('emoji.name ILIKE :q', { q: `%${ps.query}%` });
+		//const emojis = await q.take(ps.limit!).getMany();
+
+		emojis = await q.getMany();
+
+		emojis = emojis.filter(emoji =>
+			emoji.name.includes(ps.query) ||
+			emoji.aliases.some(a => a.includes(ps.query)) ||
+			emoji.category?.includes(ps.query));
+
+		emojis.splice(ps.limit! + 1);
+	} else {
+		emojis = await q.take(ps.limit!).getMany();
+	}
+
+	return Emojis.packMany(emojis);
 });

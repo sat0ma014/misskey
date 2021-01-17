@@ -3,7 +3,8 @@ Docker Guide
 
 This guide describes how to install and setup Misskey with Docker.
 
-[Japanese version also available - 日本語版もあります](./docker.ja.md)
+- [Japanese version also available - 日本語版もあります](./docker.ja.md)
+- [Simplified Chinese version also available - 简体中文版同样可用](./docker.zh.md)
 
 ----------------------------------------------------------------
 
@@ -68,7 +69,7 @@ Build misskey with the following:
 *5.* Init DB
 ----------------------------------------------------------------
 ``` shell
-docker-compose run --rm web npm run init
+docker-compose run --rm web yarn run init
 ```
 
 *6.* That is it.
@@ -88,7 +89,7 @@ Just `docker-compose up -d`. GLHF!
 7. `docker-compose stop && docker-compose up -d`
 
 ### How to execute [cli commands](manage.en.md):
-`docker-compose run --rm web node cli/mark-admin @example`
+`docker-compose run --rm web node built/tools/mark-admin @example`
 
 ----------------------------------------------------------------
 

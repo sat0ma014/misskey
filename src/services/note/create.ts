@@ -1,26 +1,25 @@
 import es from '../../db/elasticsearch';
 import { publishMainStream, publishNotesStream } from '../stream';
-import { deliver } from '../../queue';
+import DeliverManager from '../../remote/activitypub/deliver-manager';
 import renderNote from '../../remote/activitypub/renderer/note';
 import renderCreate from '../../remote/activitypub/renderer/create';
 import renderAnnounce from '../../remote/activitypub/renderer/announce';
 import { renderActivity } from '../../remote/activitypub/renderer';
-import watch from './watch';
 import { parse } from '../../mfm/parse';
 import { resolveUser } from '../../remote/resolve-user';
 import config from '../../config';
-import { updateHashtag } from '../update-hashtag';
+import { updateHashtags } from '../update-hashtag';
 import { concat } from '../../prelude/array';
 import insertNoteUnread from './unread';
 import { registerOrFetchInstanceDoc } from '../register-or-fetch-instance-doc';
 import extractMentions from '../../misc/extract-mentions';
 import extractEmojis from '../../misc/extract-emojis';
 import extractHashtags from '../../misc/extract-hashtags';
-import { Note } from '../../models/entities/note';
-import { Mutings, Users, NoteWatchings, Followings, Notes, Instances, UserProfiles } from '../../models';
+import { Note, IMentionedRemoteUsers } from '../../models/entities/note';
+import { Mutings, Users, NoteWatchings, Notes, Instances, UserProfiles, Antennas, Followings, MutedNotes, Channels, ChannelFollowings } from '../../models';
 import { DriveFile } from '../../models/entities/drive-file';
 import { App } from '../../models/entities/app';
-import { Not, getConnection } from 'typeorm';
+import { Not, getConnection, In } from 'typeorm';
 import { User, ILocalUser, IRemoteUser } from '../../models/entities/user';
 import { genId } from '../../misc/gen-id';
 import { notesChart, perUserNotesChart, activeUsersChart, instanceChart } from '../chart';
@@ -28,6 +27,12 @@ import { Poll, IPoll } from '../../models/entities/poll';
 import { createNotification } from '../create-notification';
 import { isDuplicateKeyValueError } from '../../misc/is-duplicate-key-value-error';
 import { ensure } from '../../prelude/ensure';
+import { checkHitAntenna } from '../../misc/check-hit-antenna';
+import { checkWordMute } from '../../misc/check-word-mute';
+import { addNoteToAntenna } from '../add-note-to-antenna';
+import { countSameRenotes } from '../../misc/count-same-renotes';
+import { deliverToRelays } from '../relay';
+import { Channel } from '../../models/entities/channel';
 
 type NotificationType = 'reply' | 'renote' | 'quote' | 'mention';
 
@@ -75,7 +80,8 @@ class NotificationManager {
 
 			// 通知される側のユーザーが通知する側のユーザーをミュートしていない限りは通知する
 			if (!mentioneesMutedUserIds.includes(this.notifier.id)) {
-				createNotification(x.target, this.notifier.id, x.reason, {
+				createNotification(x.target, x.reason, {
+					notifierId: this.notifier.id,
 					noteId: this.note.id
 				});
 			}
@@ -90,54 +96,78 @@ type Option = {
 	reply?: Note | null;
 	renote?: Note | null;
 	files?: DriveFile[] | null;
-	geo?: any | null;
 	poll?: IPoll | null;
 	viaMobile?: boolean | null;
 	localOnly?: boolean | null;
 	cw?: string | null;
 	visibility?: string;
 	visibleUsers?: User[] | null;
+	channel?: Channel | null;
 	apMentions?: User[] | null;
 	apHashtags?: string[] | null;
 	apEmojis?: string[] | null;
-	questionUri?: string | null;
 	uri?: string | null;
+	url?: string | null;
 	app?: App | null;
 };
 
 export default async (user: User, data: Option, silent = false) => new Promise<Note>(async (res, rej) => {
+	// チャンネル外にリプライしたら対象のスコープに合わせる
+	// (クライアントサイドでやっても良い処理だと思うけどとりあえずサーバーサイドで)
+	if (data.reply && data.channel && data.reply.channelId !== data.channel.id) {
+		if (data.reply.channelId) {
+			data.channel = await Channels.findOne(data.reply.channelId);
+		} else {
+			data.channel = null;
+		}
+	}
+
+	// チャンネル内にリプライしたら対象のスコープに合わせる
+	// (クライアントサイドでやっても良い処理だと思うけどとりあえずサーバーサイドで)
+	if (data.reply && (data.channel == null) && data.reply.channelId) {
+		data.channel = await Channels.findOne(data.reply.channelId);
+	}
+
 	if (data.createdAt == null) data.createdAt = new Date();
 	if (data.visibility == null) data.visibility = 'public';
 	if (data.viaMobile == null) data.viaMobile = false;
 	if (data.localOnly == null) data.localOnly = false;
+	if (data.channel != null) data.visibility = 'public';
+	if (data.channel != null) data.visibleUsers = [];
+	if (data.channel != null) data.localOnly = true;
 
 	// サイレンス
-	if (user.isSilenced && data.visibility == 'public') {
+	if (user.isSilenced && data.visibility === 'public' && data.channel == null) {
 		data.visibility = 'home';
 	}
 
 	// Renote対象が「ホームまたは全体」以外の公開範囲ならreject
-	if (data.renote && data.renote.visibility != 'public' && data.renote.visibility != 'home') {
+	if (data.renote && data.renote.visibility !== 'public' && data.renote.visibility !== 'home' && data.renote.userId !== user.id) {
 		return rej('Renote target is not public or home');
 	}
 
 	// Renote対象がpublicではないならhomeにする
-	if (data.renote && data.renote.visibility != 'public' && data.visibility == 'public') {
+	if (data.renote && data.renote.visibility !== 'public' && data.visibility === 'public') {
 		data.visibility = 'home';
 	}
 
+	// Renote対象がfollowersならfollowersにする
+	if (data.renote && data.renote.visibility === 'followers') {
+		data.visibility = 'followers';
+	}
+
 	// 返信対象がpublicではないならhomeにする
-	if (data.reply && data.reply.visibility != 'public' && data.visibility == 'public') {
+	if (data.reply && data.reply.visibility !== 'public' && data.visibility === 'public') {
 		data.visibility = 'home';
 	}
 
 	// ローカルのみをRenoteしたらローカルのみにする
-	if (data.renote && data.renote.localOnly) {
+	if (data.renote && data.renote.localOnly && data.channel == null) {
 		data.localOnly = true;
 	}
 
 	// ローカルのみにリプライしたらローカルのみにする
-	if (data.reply && data.reply.localOnly) {
+	if (data.reply && data.reply.localOnly && data.channel == null) {
 		data.localOnly = true;
 	}
 
@@ -166,7 +196,7 @@ export default async (user: User, data: Option, silent = false) => new Promise<N
 		mentionedUsers = data.apMentions || await extractMentionedUsers(user, combinedTokens);
 	}
 
-	tags = tags.filter(tag => tag.length <= 100);
+	tags = tags.filter(tag => Array.from(tag || '').length <= 128).splice(0, 32);
 
 	if (data.reply && (user.id !== data.reply.userId) && !mentionedUsers.some(u => u.id === data.reply!.userId)) {
 		mentionedUsers.push(await Users.findOne(data.reply.userId).then(ensure));
@@ -203,16 +233,66 @@ export default async (user: User, data: Option, silent = false) => new Promise<N
 	}
 
 	// ハッシュタグ更新
-	for (const tag of tags) updateHashtag(user, tag);
+	if (data.visibility === 'public' || data.visibility === 'home') {
+		updateHashtags(user, tags);
+	}
 
 	// Increment notes count (user)
 	incNotesCountOfUser(user);
+
+	// Word mute
+	UserProfiles.find({
+		enableWordMute: true
+	}).then(us => {
+		for (const u of us) {
+			checkWordMute(note, { id: u.userId }, u.mutedWords).then(shouldMute => {
+				if (shouldMute) {
+					MutedNotes.save({
+						id: genId(),
+						userId: u.userId,
+						noteId: note.id,
+						reason: 'word',
+					});
+				}
+			});
+		}
+	});
+
+	// Antenna
+	Antennas.find().then(async antennas => {
+		const followings = await Followings.createQueryBuilder('following')
+			.andWhere(`following.followeeId = :userId`, { userId: note.userId })
+			.getMany();
+
+		const followers = followings.map(f => f.followerId);
+
+		for (const antenna of antennas) {
+			checkHitAntenna(antenna, note, user, followers).then(hit => {
+				if (hit) {
+					addNoteToAntenna(antenna, note, user);
+				}
+			});
+		}
+	});
+
+	// Channel
+	if (note.channelId) {
+		ChannelFollowings.find({ followeeId: note.channelId }).then(followings => {
+			for (const following of followings) {
+				insertNoteUnread(following.followerId, note, {
+					isSpecified: false,
+					isMentioned: false,
+				});
+			}
+		});
+	}
 
 	if (data.reply) {
 		saveReply(data.reply, note);
 	}
 
-	if (data.renote) {
+	// この投稿を除く指定したユーザーによる指定したノートのリノートが存在しないとき
+	if (data.renote && (await countSameRenotes(user.id, data.renote.id, note.id) === 0)) {
 		incRenoteCount(data.renote);
 	}
 
@@ -225,11 +305,23 @@ export default async (user: User, data: Option, silent = false) => new Promise<N
 			if (data.visibleUsers == null) throw new Error('invalid param');
 
 			for (const u of data.visibleUsers) {
-				insertNoteUnread(u, note, true);
+				// ローカルユーザーのみ
+				if (!Users.isLocalUser(u)) continue;
+
+				insertNoteUnread(u.id, note, {
+					isSpecified: true,
+					isMentioned: false,
+				});
 			}
 		} else {
 			for (const u of mentionedUsers) {
-				insertNoteUnread(u, note, false);
+				// ローカルユーザーのみ
+				if (!Users.isLocalUser(u)) continue;
+
+				insertNoteUnread(u.id, note, {
+					isSpecified: false,
+					isMentioned: true,
+				});
 			}
 		}
 
@@ -245,25 +337,12 @@ export default async (user: User, data: Option, silent = false) => new Promise<N
 		const nm = new NotificationManager(user, note);
 		const nmRelatedPromises = [];
 
-		createMentionedEvents(mentionedUsers, note, nm);
-
-		const noteActivity = await renderNoteOrRenoteActivity(data, note);
-
-		if (Users.isLocalUser(user)) {
-			deliverNoteToMentionedRemoteUsers(mentionedUsers, user, noteActivity);
-		}
-
-		const profile = await UserProfiles.findOne(user.id).then(ensure);
+		await createMentionedEvents(mentionedUsers, note, nm);
 
 		// If has in reply to note
 		if (data.reply) {
 			// Fetch watchers
 			nmRelatedPromises.push(notifyToWatchersOfReplyee(data.reply, user, nm));
-
-			// この投稿をWatchする
-			if (Users.isLocalUser(user) && profile.autoWatch) {
-				watch(user.id, data.reply);
-			}
 
 			// 通知
 			if (data.reply.userHost === null) {
@@ -284,21 +363,69 @@ export default async (user: User, data: Option, silent = false) => new Promise<N
 			// Fetch watchers
 			nmRelatedPromises.push(notifyToWatchersOfRenotee(data.renote, user, nm, type));
 
-			// この投稿をWatchする
-			if (Users.isLocalUser(user) && profile.autoWatch) {
-				watch(user.id, data.renote);
-			}
-
 			// Publish event
 			if ((user.id !== data.renote.userId) && data.renote.userHost === null) {
 				publishMainStream(data.renote.userId, 'renote', noteObj);
 			}
 		}
 
-		publish(user, note, data.reply, data.renote, noteActivity);
-
 		Promise.all(nmRelatedPromises).then(() => {
 			nm.deliver();
+		});
+
+		//#region AP deliver
+		if (Users.isLocalUser(user)) {
+			(async () => {
+				const noteActivity = await renderNoteOrRenoteActivity(data, note);
+				const dm = new DeliverManager(user, noteActivity);
+
+				// メンションされたリモートユーザーに配送
+				for (const u of mentionedUsers.filter(u => Users.isRemoteUser(u))) {
+					dm.addDirectRecipe(u as IRemoteUser);
+				}
+
+				// 投稿がリプライかつ投稿者がローカルユーザーかつリプライ先の投稿の投稿者がリモートユーザーなら配送
+				if (data.reply && data.reply.userHost !== null) {
+					const u = await Users.findOne(data.reply.userId);
+					if (u && Users.isRemoteUser(u)) dm.addDirectRecipe(u);
+				}
+
+				// 投稿がRenoteかつ投稿者がローカルユーザーかつRenote元の投稿の投稿者がリモートユーザーなら配送
+				if (data.renote && data.renote.userHost !== null) {
+					const u = await Users.findOne(data.renote.userId);
+					if (u && Users.isRemoteUser(u)) dm.addDirectRecipe(u);
+				}
+
+				// フォロワーに配送
+				if (['public', 'home', 'followers'].includes(note.visibility)) {
+					dm.addFollowersRecipe();
+				}
+
+				if (['public'].includes(note.visibility)) {
+					deliverToRelays(user, noteActivity);
+				}
+
+				dm.execute();
+			})();
+		}
+		//#endregion
+	}
+
+	if (data.channel) {
+		Channels.increment({ id: data.channel.id }, 'notesCount', 1);
+		Channels.update(data.channel.id, {
+			lastNotedAt: new Date(),
+		});
+
+		Notes.count({
+			userId: user.id,
+			channelId: data.channel.id,
+		}).then(count => {
+			// この処理が行われるのはノート作成後なので、ノートが一つしかなかったら最初の投稿だと判断できる
+			// TODO: とはいえノートを削除して何回も投稿すればその分だけインクリメントされる雑さもあるのでどうにかしたい
+			if (count === 1) {
+				Channels.increment({ id: data.channel.id }, 'usersCount', 1);
+			}
 		});
 	}
 
@@ -321,29 +448,6 @@ function incRenoteCount(renote: Note) {
 	Notes.increment({ id: renote.id }, 'score', 1);
 }
 
-async function publish(user: User, note: Note, reply: Note | null | undefined, renote: Note | null | undefined, noteActivity: any) {
-	if (Users.isLocalUser(user)) {
-		// 投稿がリプライかつ投稿者がローカルユーザーかつリプライ先の投稿の投稿者がリモートユーザーなら配送
-		if (reply && reply.userHost !== null) {
-			Users.findOne(reply.userId).then(ensure).then(u => {
-				deliver(user, noteActivity, u.inbox);
-			});
-		}
-
-		// 投稿がRenoteかつ投稿者がローカルユーザーかつRenote元の投稿の投稿者がリモートユーザーなら配送
-		if (renote && renote.userHost !== null) {
-			Users.findOne(renote.userId).then(ensure).then(u => {
-				deliver(user, noteActivity, u.inbox);
-			});
-		}
-	}
-
-	if (['public', 'home', 'followers'].includes(note.visibility)) {
-		// フォロワーに配信
-		publishToFollowers(note, user, noteActivity);
-	}
-}
-
 async function insertNote(user: User, data: Option, tags: string[], emojis: string[], mentionedUsers: User[]) {
 	const insert = new Note({
 		id: genId(data.createdAt!),
@@ -351,6 +455,7 @@ async function insertNote(user: User, data: Option, tags: string[], emojis: stri
 		fileIds: data.files ? data.files.map(file => file.id) : [],
 		replyId: data.reply ? data.reply.id : null,
 		renoteId: data.renote ? data.renote.id : null,
+		channelId: data.channel ? data.channel.id : null,
 		name: data.name,
 		text: data.text,
 		hasPoll: data.poll != null,
@@ -360,8 +465,6 @@ async function insertNote(user: User, data: Option, tags: string[], emojis: stri
 		userId: user.id,
 		viaMobile: data.viaMobile!,
 		localOnly: data.localOnly!,
-		geo: data.geo || null,
-		appId: data.app ? data.app.id : null,
 		visibility: data.visibility as any,
 		visibleUserIds: data.visibility == 'specified'
 			? data.visibleUsers
@@ -380,43 +483,49 @@ async function insertNote(user: User, data: Option, tags: string[], emojis: stri
 	});
 
 	if (data.uri != null) insert.uri = data.uri;
+	if (data.url != null) insert.url = data.url;
 
 	// Append mentions data
 	if (mentionedUsers.length > 0) {
 		insert.mentions = mentionedUsers.map(u => u.id);
-		insert.mentionedRemoteUsers = JSON.stringify(mentionedUsers.filter(u => Users.isRemoteUser(u)).map(u => ({
-			uri: (u as IRemoteUser).uri,
-			username: u.username,
-			host: u.host
-		})));
+		const profiles = await UserProfiles.find({ userId: In(insert.mentions) });
+		insert.mentionedRemoteUsers = JSON.stringify(mentionedUsers.filter(u => Users.isRemoteUser(u)).map(u => {
+			const profile = profiles.find(p => p.userId == u.id);
+			const url = profile != null ? profile.url : null;
+			return {
+				uri: u.uri,
+				url: url == null ? undefined : url,
+				username: u.username,
+				host: u.host
+			} as IMentionedRemoteUsers[0];
+		}));
 	}
 
 	// 投稿を作成
 	try {
-		let note: Note;
 		if (insert.hasPoll) {
 			// Start transaction
 			await getConnection().transaction(async transactionalEntityManager => {
-				note = await transactionalEntityManager.save(insert);
+				await transactionalEntityManager.insert(Note, insert);
 
 				const poll = new Poll({
-					noteId: note.id,
+					noteId: insert.id,
 					choices: data.poll!.choices,
 					expiresAt: data.poll!.expiresAt,
 					multiple: data.poll!.multiple,
 					votes: new Array(data.poll!.choices.length).fill(0),
-					noteVisibility: note.visibility,
+					noteVisibility: insert.visibility,
 					userId: user.id,
 					userHost: user.host
 				});
 
-				await transactionalEntityManager.save(poll);
+				await transactionalEntityManager.insert(Poll, poll);
 			});
 		} else {
-			note = await Notes.save(insert);
+			await Notes.insert(insert);
 		}
 
-		return note!;
+		return await Notes.findOneOrFail(insert.id);
 	} catch (e) {
 		// duplicate key error
 		if (isDuplicateKeyValueError(e)) {
@@ -427,7 +536,7 @@ async function insertNote(user: User, data: Option, tags: string[], emojis: stri
 
 		console.error(e);
 
-		throw new Error('something happened');
+		throw e;
 	}
 }
 
@@ -435,7 +544,7 @@ function index(note: Note) {
 	if (note.text == null || config.elasticsearch == null) return;
 
 	es!.index({
-		index: 'misskey_note',
+		index: config.elasticsearch.index || 'misskey_note',
 		id: note.id.toString(),
 		body: {
 			text: note.text.toLowerCase(),
@@ -464,34 +573,6 @@ async function notifyToWatchersOfReplyee(reply: Note, user: User, nm: Notificati
 
 	for (const watcher of watchers) {
 		nm.push(watcher.userId, 'reply');
-	}
-}
-
-async function publishToFollowers(note: Note, user: User, noteActivity: any) {
-	const followers = await Followings.find({
-		followeeId: note.userId
-	});
-
-	const queue: string[] = [];
-
-	for (const following of followers) {
-		if (Followings.isRemoteFollower(following)) {
-			// フォロワーがリモートユーザーかつ投稿者がローカルユーザーなら投稿を配信
-			if (Users.isLocalUser(user)) {
-				const inbox = following.followerSharedInbox || following.followerInbox;
-				if (!queue.includes(inbox)) queue.push(inbox);
-			}
-		}
-	}
-
-	for (const inbox of queue) {
-		deliver(user as any, noteActivity, inbox);
-	}
-}
-
-function deliverNoteToMentionedRemoteUsers(mentionedUsers: User[], user: ILocalUser, noteActivity: any) {
-	for (const u of mentionedUsers.filter(u => Users.isRemoteUser(u))) {
-		deliver(user, noteActivity, (u as IRemoteUser).inbox);
 	}
 }
 
