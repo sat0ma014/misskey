@@ -5,13 +5,13 @@ import authenticate from './authenticate';
 import call from './call';
 import { ApiError } from './error';
 
-export default (endpoint: IEndpoint, ctx: Koa.BaseContext) => new Promise((res) => {
-	const body = ctx.is('multipart/form-data') ? (ctx.req as any).body : ctx.request.body;
+export default (endpoint: IEndpoint, ctx: Koa.Context) => new Promise((res) => {
+	const body = ctx.request.body;
 
 	const reply = (x?: any, y?: ApiError) => {
 		if (x == null) {
 			ctx.status = 204;
-		} else if (typeof x === 'number') {
+		} else if (typeof x === 'number' && y) {
 			ctx.status = x;
 			ctx.body = {
 				error: {
@@ -23,7 +23,8 @@ export default (endpoint: IEndpoint, ctx: Koa.BaseContext) => new Promise((res) 
 				}
 			};
 		} else {
-			ctx.body = x;
+			// 文字列を返す場合は、JSON.stringify通さないとJSONと認識されない
+			ctx.body = typeof x === 'string' ? JSON.stringify(x) : x;
 		}
 		res();
 	};
@@ -31,10 +32,10 @@ export default (endpoint: IEndpoint, ctx: Koa.BaseContext) => new Promise((res) 
 	// Authentication
 	authenticate(body['i']).then(([user, app]) => {
 		// API invoking
-		call(endpoint.name, user, app, body, (ctx.req as any).file).then((res: any) => {
+		call(endpoint.name, user, app, body, (ctx as any).file).then((res: any) => {
 			reply(res);
 		}).catch((e: ApiError) => {
-			reply(e.httpStatusCode ? e.httpStatusCode : e.kind == 'client' ? 400 : 500, e);
+			reply(e.httpStatusCode ? e.httpStatusCode : e.kind === 'client' ? 400 : 500, e);
 		});
 	}).catch(() => {
 		reply(403, new ApiError({

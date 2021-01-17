@@ -4,10 +4,14 @@ import define from '../../define';
 import { makePaginationQuery } from '../../common/make-pagination-query';
 import { Notes, Followings } from '../../../../models';
 import { generateVisibilityQuery } from '../../common/generate-visibility-query';
-import { generateMuteQuery } from '../../common/generate-mute-query';
+import { generateMutedUserQuery } from '../../common/generate-muted-user-query';
 import { activeUsersChart } from '../../../../services/chart';
 import { Brackets } from 'typeorm';
-import { types, bool } from '../../../../misc/schema';
+import { generateRepliesQuery } from '../../common/generate-replies-query';
+import { injectPromo } from '../../common/inject-promo';
+import { injectFeatured } from '../../common/inject-featured';
+import { generateMutedNoteQuery } from '../../common/generate-muted-note-query';
+import { generateChannelQuery } from '../../common/generate-channel-query';
 
 export const meta = {
 	desc: {
@@ -17,7 +21,7 @@ export const meta = {
 
 	tags: ['notes'],
 
-	requireCredential: true,
+	requireCredential: true as const,
 
 	params: {
 		limit: {
@@ -89,17 +93,24 @@ export const meta = {
 	},
 
 	res: {
-		type: types.array,
-		optional: bool.false, nullable: bool.false,
+		type: 'array' as const,
+		optional: false as const, nullable: false as const,
 		items: {
-			type: types.object,
-			optional: bool.false, nullable: bool.false,
+			type: 'object' as const,
+			optional: false as const, nullable: false as const,
 			ref: 'Note',
 		}
 	},
 };
 
 export default define(meta, async (ps, user) => {
+	const hasFollowing = (await Followings.count({
+		where: {
+			followerId: user.id,
+		},
+		take: 1
+	})) !== 0;
+
 	//#region Construct query
 	const followingQuery = Followings.createQueryBuilder('following')
 		.select('following.followeeId')
@@ -108,67 +119,47 @@ export default define(meta, async (ps, user) => {
 	const query = makePaginationQuery(Notes.createQueryBuilder('note'),
 			ps.sinceId, ps.untilId, ps.sinceDate, ps.untilDate)
 		.andWhere(new Brackets(qb => { qb
-			.where(`note.userId IN (${ followingQuery.getQuery() })`)
-			.orWhere('note.userId = :meId', { meId: user.id });
+			.where('note.userId = :meId', { meId: user.id });
+			if (hasFollowing) qb.orWhere(`note.userId IN (${ followingQuery.getQuery() })`);
 		}))
 		.leftJoinAndSelect('note.user', 'user')
 		.setParameters(followingQuery.getParameters());
 
+	generateChannelQuery(query, user);
+	generateRepliesQuery(query, user);
 	generateVisibilityQuery(query, user);
-	generateMuteQuery(query, user);
-
-	/* v11 TODO
-	// MongoDBではトップレベルで否定ができないため、De Morganの法則を利用してクエリします。
-	// つまり、「『自分の投稿かつRenote』ではない」を「『自分の投稿ではない』または『Renoteではない』」と表現します。
-	// for details: https://en.wikipedia.org/wiki/De_Morgan%27s_laws
+	generateMutedUserQuery(query, user);
+	generateMutedNoteQuery(query, user);
 
 	if (ps.includeMyRenotes === false) {
-		query.$and.push({
-			$or: [{
-				userId: { $ne: user.id }
-			}, {
-				renoteId: null
-			}, {
-				text: { $ne: null }
-			}, {
-				fileIds: { $ne: [] }
-			}, {
-				poll: { $ne: null }
-			}]
-		});
+		query.andWhere(new Brackets(qb => {
+			qb.orWhere('note.userId != :meId', { meId: user.id });
+			qb.orWhere('note.renoteId IS NULL');
+			qb.orWhere('note.text IS NOT NULL');
+			qb.orWhere('note.fileIds != \'{}\'');
+			qb.orWhere('0 < (SELECT COUNT(*) FROM poll WHERE poll."noteId" = note.id)');
+		}));
 	}
 
 	if (ps.includeRenotedMyNotes === false) {
-		query.$and.push({
-			$or: [{
-				'_renote.userId': { $ne: user.id }
-			}, {
-				renoteId: null
-			}, {
-				text: { $ne: null }
-			}, {
-				fileIds: { $ne: [] }
-			}, {
-				poll: { $ne: null }
-			}]
-		});
+		query.andWhere(new Brackets(qb => {
+			qb.orWhere('note.renoteUserId != :meId', { meId: user.id });
+			qb.orWhere('note.renoteId IS NULL');
+			qb.orWhere('note.text IS NOT NULL');
+			qb.orWhere('note.fileIds != \'{}\'');
+			qb.orWhere('0 < (SELECT COUNT(*) FROM poll WHERE poll."noteId" = note.id)');
+		}));
 	}
 
 	if (ps.includeLocalRenotes === false) {
-		query.$and.push({
-			$or: [{
-				'_renote.user.host': { $ne: null }
-			}, {
-				renoteId: null
-			}, {
-				text: { $ne: null }
-			}, {
-				fileIds: { $ne: [] }
-			}, {
-				poll: { $ne: null }
-			}]
-		});
-	}*/
+		query.andWhere(new Brackets(qb => {
+			qb.orWhere('note.renoteUserHost IS NOT NULL');
+			qb.orWhere('note.renoteId IS NULL');
+			qb.orWhere('note.text IS NOT NULL');
+			qb.orWhere('note.fileIds != \'{}\'');
+			qb.orWhere('0 < (SELECT COUNT(*) FROM poll WHERE poll."noteId" = note.id)');
+		}));
+	}
 
 	if (ps.withFiles) {
 		query.andWhere('note.fileIds != \'{}\'');
@@ -176,6 +167,9 @@ export default define(meta, async (ps, user) => {
 	//#endregion
 
 	const timeline = await query.take(ps.limit!).getMany();
+
+	await injectPromo(timeline, user);
+	await injectFeatured(timeline, user);
 
 	process.nextTick(() => {
 		if (user) {

@@ -3,7 +3,8 @@ Dockerを使ったMisskey構築方法
 
 このガイドはDockerを使ったMisskeyセットアップ方法について解説します。
 
-[英語版もあります - English version also available](./docker.en.md)
+- [英語版もあります - English version also available](./docker.en.md)
+- [简体中文版同样可用 - Simplified Chinese version also available](./docker.zh.md)
 
 ----------------------------------------------------------------
 
@@ -68,7 +69,7 @@ cp docker_example.env docker.env
 *5.* データベースを初期化
 ----------------------------------------------------------------
 ``` shell
-docker-compose run --rm web npm run init
+docker-compose run --rm web yarn run init
 ```
 
 *6.* 以上です！
@@ -89,7 +90,7 @@ docker-compose run --rm web npm run init
 
 ### cliコマンドを実行する方法:
 
-`docker-compose run --rm web node cli/mark-admin @example`
+`docker-compose run --rm web node built/tools/mark-admin @example`
 
 ----------------------------------------------------------------
 

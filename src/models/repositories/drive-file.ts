@@ -5,7 +5,11 @@ import { User } from '../entities/user';
 import { toPuny } from '../../misc/convert-host';
 import { ensure } from '../../prelude/ensure';
 import { awaitAll } from '../../prelude/await-all';
-import { types, bool, SchemaType } from '../../misc/schema';
+import { SchemaType } from '../../misc/schema';
+import config from '../../config';
+import { query, appendQuery } from '../../prelude/url';
+import { Meta } from '../entities/meta';
+import { fetchMeta } from '../../misc/fetch-meta';
 
 export type PackedDriveFile = SchemaType<typeof packedDriveFileSchema>;
 
@@ -21,11 +25,30 @@ export class DriveFileRepository extends Repository<DriveFile> {
 		);
 	}
 
-	public getPublicUrl(file: DriveFile, thumbnail = false): string | null {
-		return thumbnail ? (file.thumbnailUrl || file.webpublicUrl || null) : (file.webpublicUrl || file.url);
+	public getPublicUrl(file: DriveFile, thumbnail = false, meta?: Meta): string | null {
+		// リモートかつメディアプロキシ
+		if (file.uri != null && file.userHost != null && config.mediaProxy != null) {
+			return appendQuery(config.mediaProxy, query({
+				url: file.uri,
+				thumbnail: thumbnail ? '1' : undefined
+			}));
+		}
+
+		// リモートかつ期限切れはローカルプロキシを試みる
+		if (file.uri != null && file.isLink && meta && meta.proxyRemoteFiles) {
+			const key = thumbnail ? file.thumbnailAccessKey : file.webpublicAccessKey;
+
+			if (key && !key.match('/')) {	// 古いものはここにオブジェクトストレージキーが入ってるので除外
+				return `${config.url}/files/${key}`;
+			}
+		}
+
+		const isImage = file.type && ['image/png', 'image/apng', 'image/gif', 'image/jpeg', 'image/webp', 'image/svg+xml'].includes(file.type);
+
+		return thumbnail ? (file.thumbnailUrl || (isImage ? (file.webpublicUrl || file.url) : null)) : (file.webpublicUrl || file.url);
 	}
 
-	public async clacDriveUsageOf(user: User['id'] | User): Promise<number> {
+	public async calcDriveUsageOf(user: User['id'] | User): Promise<number> {
 		const id = typeof user === 'object' ? user.id : user;
 
 		const { sum } = await this
@@ -37,7 +60,7 @@ export class DriveFileRepository extends Repository<DriveFile> {
 		return parseInt(sum, 10) || 0;
 	}
 
-	public async clacDriveUsageOfHost(host: string): Promise<number> {
+	public async calcDriveUsageOfHost(host: string): Promise<number> {
 		const { sum } = await this
 			.createQueryBuilder('file')
 			.where('file.userHost = :host', { host: toPuny(host) })
@@ -47,7 +70,7 @@ export class DriveFileRepository extends Repository<DriveFile> {
 		return parseInt(sum, 10) || 0;
 	}
 
-	public async clacDriveUsageOfLocal(): Promise<number> {
+	public async calcDriveUsageOfLocal(): Promise<number> {
 		const { sum } = await this
 			.createQueryBuilder('file')
 			.where('file.userHost IS NULL')
@@ -57,7 +80,7 @@ export class DriveFileRepository extends Repository<DriveFile> {
 		return parseInt(sum, 10) || 0;
 	}
 
-	public async clacDriveUsageOfRemote(): Promise<number> {
+	public async calcDriveUsageOfRemote(): Promise<number> {
 		const { sum } = await this
 			.createQueryBuilder('file')
 			.where('file.userHost IS NOT NULL')
@@ -82,6 +105,8 @@ export class DriveFileRepository extends Repository<DriveFile> {
 
 		const file = typeof src === 'object' ? src : await this.findOne(src).then(ensure);
 
+		const meta = await fetchMeta();
+
 		return await awaitAll({
 			id: file.id,
 			createdAt: file.createdAt.toISOString(),
@@ -90,14 +115,17 @@ export class DriveFileRepository extends Repository<DriveFile> {
 			md5: file.md5,
 			size: file.size,
 			isSensitive: file.isSensitive,
+			blurhash: file.blurhash,
 			properties: file.properties,
-			url: opts.self ? file.url : this.getPublicUrl(file, false),
-			thumbnailUrl: this.getPublicUrl(file, true),
+			url: opts.self ? file.url : this.getPublicUrl(file, false, meta),
+			thumbnailUrl: this.getPublicUrl(file, true, meta),
+			comment: file.comment,
 			folderId: file.folderId,
 			folder: opts.detail && file.folderId ? DriveFolders.pack(file.folderId, {
 				detail: true
 			}) : null,
-			user: opts.withUser ? Users.pack(file.userId!) : null
+			userId: opts.withUser ? file.userId : null,
+			user: (opts.withUser && file.userId) ? Users.pack(file.userId) : null
 		});
 	}
 
@@ -114,63 +142,63 @@ export class DriveFileRepository extends Repository<DriveFile> {
 }
 
 export const packedDriveFileSchema = {
-	type: types.object,
-	optional: bool.false, nullable: bool.false,
+	type: 'object' as const,
+	optional: false as const, nullable: false as const,
 	properties: {
 		id: {
-			type: types.string,
-			optional: bool.false, nullable: bool.false,
+			type: 'string' as const,
+			optional: false as const, nullable: false as const,
 			format: 'id',
 			description: 'The unique identifier for this Drive file.',
 			example: 'xxxxxxxxxx',
 		},
 		createdAt: {
-			type: types.string,
-			optional: bool.false, nullable: bool.false,
+			type: 'string' as const,
+			optional: false as const, nullable: false as const,
 			format: 'date-time',
 			description: 'The date that the Drive file was created on Misskey.'
 		},
 		name: {
-			type: types.string,
-			optional: bool.false, nullable: bool.false,
+			type: 'string' as const,
+			optional: false as const, nullable: false as const,
 			description: 'The file name with extension.',
 			example: 'lenna.jpg'
 		},
 		type: {
-			type: types.string,
-			optional: bool.false, nullable: bool.false,
+			type: 'string' as const,
+			optional: false as const, nullable: false as const,
 			description: 'The MIME type of this Drive file.',
 			example: 'image/jpeg'
 		},
 		md5: {
-			type: types.string,
-			optional: bool.false, nullable: bool.false,
+			type: 'string' as const,
+			optional: false as const, nullable: false as const,
 			format: 'md5',
 			description: 'The MD5 hash of this Drive file.',
 			example: '15eca7fba0480996e2245f5185bf39f2'
 		},
 		size: {
-			type: types.number,
-			optional: bool.false, nullable: bool.false,
+			type: 'number' as const,
+			optional: false as const, nullable: false as const,
 			description: 'The size of this Drive file. (bytes)',
 			example: 51469
 		},
 		url: {
-			type: types.string,
-			optional: bool.false, nullable: bool.true,
+			type: 'string' as const,
+			optional: false as const, nullable: true as const,
 			format: 'url',
 			description: 'The URL of this Drive file.',
 		},
 		folderId: {
-			type: types.string,
-			optional: bool.false, nullable: bool.true,
+			type: 'string' as const,
+			optional: false as const, nullable: true as const,
 			format: 'id',
 			description: 'The parent folder ID of this Drive file.',
 			example: 'xxxxxxxxxx',
 		},
 		isSensitive: {
-			type: types.boolean,
-			optional: bool.false, nullable: bool.false,
+			type: 'boolean' as const,
+			optional: false as const, nullable: false as const,
 			description: 'Whether this Drive file is sensitive.',
 		},
 	},

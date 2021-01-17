@@ -1,16 +1,15 @@
-import * as uuid from 'uuid';
+import { v4 as uuid } from 'uuid';
 import $ from 'cafy';
 import config from '../../../../../config';
 import define from '../../../define';
 import { ApiError } from '../../../error';
 import { Apps, AuthSessions } from '../../../../../models';
 import { genId } from '../../../../../misc/gen-id';
-import { types, bool } from '../../../../../misc/schema';
 
 export const meta = {
 	tags: ['auth'],
 
-	requireCredential: false,
+	requireCredential: false as const,
 
 	desc: {
 		'ja-JP': 'アプリを認証するためのトークンを作成します。',
@@ -28,17 +27,17 @@ export const meta = {
 	},
 
 	res: {
-		type: types.object,
-		optional: bool.false, nullable: bool.false,
+		type: 'object' as const,
+		optional: false as const, nullable: false as const,
 		properties: {
 			token: {
-				type: types.string,
-				optional: bool.false, nullable: bool.false,
+				type: 'string' as const,
+				optional: false as const, nullable: false as const,
 				description: 'セッションのトークン'
 			},
 			url: {
-				type: types.string,
-				optional: bool.false, nullable: bool.false,
+				type: 'string' as const,
+				optional: false as const, nullable: false as const,
 				format: 'url',
 				description: 'セッションのURL'
 			},
@@ -65,7 +64,7 @@ export default define(meta, async (ps) => {
 	}
 
 	// Generate token
-	const token = uuid.v4();
+	const token = uuid();
 
 	// Create session token document
 	const doc = await AuthSessions.save({

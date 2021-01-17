@@ -4,8 +4,7 @@ import define from '../../define';
 import { Notes } from '../../../../models';
 import { makePaginationQuery } from '../../common/make-pagination-query';
 import { generateVisibilityQuery } from '../../common/generate-visibility-query';
-import { generateMuteQuery } from '../../common/generate-mute-query';
-import { types, bool } from '../../../../misc/schema';
+import { generateMutedUserQuery } from '../../common/generate-muted-user-query';
 
 export const meta = {
 	desc: {
@@ -15,7 +14,7 @@ export const meta = {
 
 	tags: ['notes'],
 
-	requireCredential: false,
+	requireCredential: false as const,
 
 	params: {
 		noteId: {
@@ -47,11 +46,11 @@ export const meta = {
 	},
 
 	res: {
-		type: types.array,
-		optional: bool.false, nullable: bool.false,
+		type: 'array' as const,
+		optional: false as const, nullable: false as const,
 		items: {
-			type: types.object,
-			optional: bool.false, nullable: bool.false,
+			type: 'object' as const,
+			optional: false as const, nullable: false as const,
 			ref: 'Note',
 		}
 	},
@@ -62,8 +61,8 @@ export default define(meta, async (ps, user) => {
 		.andWhere('note.replyId = :replyId', { replyId: ps.noteId })
 		.leftJoinAndSelect('note.user', 'user');
 
-	if (user) generateVisibilityQuery(query, user);
-	if (user) generateMuteQuery(query, user);
+	generateVisibilityQuery(query, user);
+	if (user) generateMutedUserQuery(query, user);
 
 	const timeline = await query.take(ps.limit!).getMany();
 

@@ -4,11 +4,8 @@ import define from '../../../define';
 import { ApiError } from '../../../error';
 import { DriveFile } from '../../../../../models/entities/drive-file';
 import { DriveFiles } from '../../../../../models';
-import { types, bool } from '../../../../../misc/schema';
 
 export const meta = {
-	stability: 'stable',
-
 	desc: {
 		'ja-JP': '指定したドライブのファイルの情報を取得します。',
 		'en-US': 'Get specified file of drive.'
@@ -16,7 +13,7 @@ export const meta = {
 
 	tags: ['drive'],
 
-	requireCredential: true,
+	requireCredential: true as const,
 
 	kind: 'read:drive',
 
@@ -39,8 +36,8 @@ export const meta = {
 	},
 
 	res: {
-		type: types.object,
-		optional: bool.false, nullable: bool.false,
+		type: 'object' as const,
+		optional: false as const, nullable: false as const,
 		ref: 'DriveFile',
 	},
 
@@ -94,6 +91,7 @@ export default define(meta, async (ps, user) => {
 
 	return await DriveFiles.pack(file, {
 		detail: true,
+		withUser: true,
 		self: true
 	});
 });

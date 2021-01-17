@@ -6,7 +6,6 @@ import { ApiError } from '../../error';
 import { ID } from '../../../../misc/cafy-id';
 import { Users } from '../../../../models';
 import { In } from 'typeorm';
-import { bool, types } from '../../../../misc/schema';
 
 export const meta = {
 	desc: {
@@ -15,7 +14,7 @@ export const meta = {
 
 	tags: ['users'],
 
-	requireCredential: false,
+	requireCredential: false as const,
 
 	params: {
 		userId: {
@@ -43,8 +42,8 @@ export const meta = {
 	},
 
 	res: {
-		type: types.object,
-		optional: bool.false, nullable: bool.false,
+		type: 'object' as const,
+		optional: false as const, nullable: false as const,
 		ref: 'User',
 	},
 
@@ -53,7 +52,7 @@ export const meta = {
 			message: 'Failed to resolve remote user.',
 			code: 'FAILED_TO_RESOLVE_REMOTE_USER',
 			id: 'ef7b9be4-9cba-4e6f-ab41-90ed171c7d3c',
-			kind: 'server' as 'server'
+			kind: 'server' as const
 		},
 
 		noSuchUser: {
@@ -67,16 +66,27 @@ export const meta = {
 export default define(meta, async (ps, me) => {
 	let user;
 
+	const isAdminOrModerator = me && (me.isAdmin || me.isModerator);
+
 	if (ps.userIds) {
 		if (ps.userIds.length === 0) {
 			return [];
 		}
 
-		const users = await Users.find({
+		const users = await Users.find(isAdminOrModerator ? {
 			id: In(ps.userIds)
+		} : {
+			id: In(ps.userIds),
+			isSuspended: false
 		});
 
-		return await Promise.all(users.map(u => Users.pack(u, me, {
+		// リクエストされた通りに並べ替え
+		const _users = [];
+		for (const id of ps.userIds) {
+			_users.push(users.find(x => x.id === id));
+		}
+
+		return await Promise.all(_users.map(u => Users.pack(u, me, {
 			detail: true
 		})));
 	} else {
@@ -94,7 +104,7 @@ export default define(meta, async (ps, me) => {
 			user = await Users.findOne(q);
 		}
 
-		if (user == null) {
+		if (user == null || (!isAdminOrModerator && user.isSuspended)) {
 			throw new ApiError(meta.errors.noSuchUser);
 		}
 

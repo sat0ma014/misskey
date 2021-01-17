@@ -1,4 +1,4 @@
-import * as Router from 'koa-router';
+import * as Router from '@koa/router';
 import config from '../../config';
 import $ from 'cafy';
 import { ID } from '../../misc/cafy-id';
@@ -17,7 +17,7 @@ import { Brackets } from 'typeorm';
 import { Note } from '../../models/entities/note';
 import { ensure } from '../../prelude/ensure';
 
-export default async (ctx: Router.IRouterContext) => {
+export default async (ctx: Router.RouterContext) => {
 	const userId = ctx.params.user;
 
 	// Get 'sinceId' parameter
@@ -82,7 +82,6 @@ export default async (ctx: Router.IRouterContext) => {
 		);
 
 		ctx.body = renderActivity(rendered);
-		ctx.set('Cache-Control', 'private, max-age=0, must-revalidate');
 		setResponseType(ctx);
 	} else {
 		// index page
@@ -91,7 +90,7 @@ export default async (ctx: Router.IRouterContext) => {
 			`${partOf}?page=true&since_id=000000000000000000000000`
 		);
 		ctx.body = renderActivity(rendered);
-		ctx.set('Cache-Control', 'private, max-age=0, must-revalidate');
+		ctx.set('Cache-Control', 'public, max-age=180');
 		setResponseType(ctx);
 	}
 };
@@ -101,7 +100,7 @@ export default async (ctx: Router.IRouterContext) => {
  * @param note Note
  */
 export async function packActivity(note: Note): Promise<any> {
-	if (note.renoteId && note.text == null && !note.hasPoll && (note.fileIds == null || note.fileIds.length == 0)) {
+	if (note.renoteId && note.text == null && !note.hasPoll && (note.fileIds == null || note.fileIds.length === 0)) {
 		const renote = await Notes.findOne(note.renoteId).then(ensure);
 		return renderAnnounce(renote.uri ? renote.uri : `${config.url}/notes/${renote.id}`, note);
 	}
